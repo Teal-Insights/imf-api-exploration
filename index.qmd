@@ -1,0 +1,226 @@
+---
+title: "IMF Data SDMX API exploration"
+format: gfm
+---
+
+## Prior art
+
+https://github.com/christophergandrud/imfr
+https://github.com/Teal-Insights/r-wbids/tree/main/R
+
+### Function names
+
+e.g.,
+
+`imf_get` or `ifs_get`
+`imf_list_indicators`
+`imf_list_geographies`
+
+## Problem Statement
+
+The IMF has recently released a [new API](https://datasupport.imf.org/knowledge?id=knowledge_category&sys_kb_id=d41858e747294ad8805d07c4f16d43e0&category_id=9959b2bc1b6391903dba646fbd4bcb6a) that returns data in [SDMX 3.0](https://sdmx.org/standards-2/) format, with support for (SDMX-JSON)[https://github.com/sdmx-twg/sdmx-json].
+
+The way the IMF recommends you use this API is via the `rsdmx` library. However, this poses a problem for some governmental and corporate users, because `rsdmx` is a GPL3-licensed library, and GPL3 creates liability and compliance issues that these organizations prefer not to deal with. So, the [econdataverse](https://econdataverse.org) team proposes to build its own, dedicated, MIT-licensed library for retrieving data from the new IMF API.
+
+This notebook contains some initial explorations toward that end.
+
+### Questions to answer
+
+- How do we get codelists?
+- What codelists do we need to query datasets?
+- Once we have codelists, how do we query for datasets?
+
+### Goal
+
+Build a foundational package with all-purpose functions for getting the full range of data available through the API. (Skip metadata for now.)
+
+## API overview
+
+**Authentication:** Spec refers to providing an API key, either as a header (`Ocp-Apim-Subscription-Key`) or a query parameter (`subscription-key`). Not sure if this is strictly required.
+
+``` {r}
+base <- "https://api.imf.org/external/sdmx/3.0"
+structure_paths <- "/structure/{structureType}/{agencyID}/{resourceID}/{version}"
+availability_paths <- "/availability/{context}/{agencyID}/{resourceID}/{version}/{key}/{componentID}"
+data_paths <- "/data/{context}/{agencyID}/{resourceID}/{version}/{key}"
+json_header <- "application/json"
+```
+
+## Exploration plan
+
+Hit the following "/structure" endpoints:
+
+- "dataflow" (describing specific datasets)
+- "datastructure" (DSDs - defining the dimensions and attributes of a dataset)
+- "codelist" (Supports wildcards `*`, other query methods like `full`, `allstubs`, `children`, `parents`, `all`, `none`)
+
+"/availability"
+
+
+"/data"
+
+## Test query
+
+``` {r}
+library(httr2)
+
+# IMF SDMX API endpoint for CPI dataflow structure
+url <- "https://api.imf.org/external/sdmx/3.0/structure/dataflow/IMF.STA/CPI/+?detail=full&references=children"
+
+# Create and execute the request
+response <- request(url) |>
+  req_headers(
+    "Accept" = "application/vnd.sdmx.structure+xml;version=3.0.0",
+    "User-Agent" = "R httr2 client",
+    "Content-Type" = json_header
+  ) |>
+  req_perform()
+
+# Check the response status
+print(paste("Status:", resp_status(response)))
+
+# Get the response body as text (XML format)
+content <- resp_body_string(response)
+
+# Print first 1000 characters to preview
+cat("Response preview:\n")
+cat(substr(content, 1, 1000))
+cat("\n...\n")
+
+# Optionally save the full response to a file
+writeLines(content, "imf_cpi_dataflow.xml")
+cat("Full response saved to: imf_cpi_dataflow.xml\n")
+```
+
+```
+req_cache(
+  req,
+  path,
+  use_on_error = FALSE,
+  debug = getOption("httr2_cache_debug", FALSE),
+  max_age = Inf,
+  max_n = Inf,
+  max_size = 1024^3
+)
+```
+
+### Types of information available (key query categories)
+
+The API is structured around four main types of queries:
+
+2.  **Data Availability Queries (`/availability` endpoint):**
+    *   **Purpose:** To discover what specific data slices (combinations of dimension values) exist without actually retrieving the data itself. Useful for building user interfaces or validating potential data queries.
+    *   **Information Types:**
+        *   **Data Availability Constraints:** Returns a "Constraint" object (structural metadata) that defines the exact cube regions and valid dimension values for a given data query pattern. This tells you *what data you could get* if you were to make a full data request.
+    *   **Flexibility:** Allows filtering by context (datastructure, dataflow), agency, resource, version, and specific dimension values using a `key` pattern (with wildcards). Can also filter by components (`c[FREQ]=A`) and specify if you want "exact" or "available" values.
+
+3.  **Data Queries (`/data` endpoint):**
+    *   **Purpose:** To retrieve the actual statistical time series and observations.
+    *   **Information Types:**
+        *   **Statistical Data:** The raw numerical and categorical data points, organized by series and observations. Includes observation values, time periods, and related attributes.
+    *   **Flexibility:** Highly flexible filtering by context, agency, resource, version, and `key` patterns (dimension values, with wildcards). Supports time-based filtering (`updatedAfter`, `firstNObservations`, `lastNObservations`), various data packaging options (`TIME_PERIOD` for time series, `AllDimensions` for flat views), and inclusion of history (`includeHistory`).
+
+4.  **Metadata Queries (`/metadata` endpoints):**
+    *   **Purpose:** To access descriptive metadata reports and information *about* the data and structures. This is typically qualitative information, not the statistical data itself.
+    *   **Information Types:**
+        *   **Metadata Sets:** Reports or documents providing information on data quality, methodologies, statistical processes, or other descriptive details related to specific datasets or structures.
+    *   **Access Methods:** Can query metadata by:
+        *   `metadataset`: Directly by the ID of a specific metadata set.
+        *   `metadataflow`: By the collection (metadataflow) that groups related metadata.
+        *   `structure`: By linking metadata to the structural artifacts (dataflows, data structures, etc.) they describe.
+    *   **Flexibility:** Supports wildcards for IDs and versions, and allows requesting different levels of detail (`full`, `allstubs`).
+
+In essence, the API is designed to support the full lifecycle of interacting with statistical data: from understanding its structure, to discovering what specific data is available, to retrieving the actual data, and finally, accessing descriptive information about that data.
+
+To get a list of indicators available through this API, you would typically use a combination of the **Structure queries** and potentially the **Data availability queries**.
+
+"Indicators" in the SDMX context are usually specific items within a **Codelist** that is linked to an **INDICATOR** dimension in a **Data Structure Definition (DSD)**. A **Dataflow** then points to a DSD.
+
+Here's a step-by-step approach:
+
+### Method 1: Using the Structure Query to find the Indicator Codelist (Recommended for full list)
+
+This is the most reliable way to get the comprehensive list of available indicators, as it directly retrieves the codelist that defines them.
+
+1.  **Identify a relevant Dataflow or Data Structure:**
+    From the `get-data` and `get-availability` examples, we see `resourceID` like `CPI` (Consumer Price Index) from `agencyID` `IMF.STA`. This `CPI` is likely a `dataflow`.
+
+2.  **Query the Dataflow to find its associated Data Structure Definition (DSD):**
+    A `dataflow` defines what data is available, and it references a `datastructure` which defines the dimensions (like "indicator").
+
+    *   **Endpoint:** `/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+    *   **Parameters:**
+        *   `structureType`: `dataflow`
+        *   `agencyID`: `IMF.STA` (or `*` to find all dataflows from all agencies)
+        *   `resourceID`: `CPI` (or `*` to find all dataflows)
+        *   `version`: `+` (for the latest stable version)
+        *   `detail`: `full` (to get all details, including references)
+        *   `references`: `children` or `all` (to ensure the referenced DSD is returned)
+
+    **Example Request:**
+    `GET https://api.imf.org/external/sdmx/3.0/structure/dataflow/IMF.STA/CPI/+?detail=full&references=children`
+
+    **What to look for in the response:**
+    In the JSON response, navigate to `data.dataflows[0].links`. You should find a link with `title: "DataStructureDefinition"` and a `urn` like `urn:sdmx:org.sdmx.infomodel.datastructure.DataStructure=IMF:ECOFIN_DSD(1.2)`. Extract the `agencyID`, `resourceID`, and `version` of this Data Structure Definition (e.g., `IMF`, `ECOFIN_DSD`, `1.2`).
+
+3.  **Query the Data Structure Definition (DSD) to find the Indicator Dimension's Codelist:**
+    The DSD defines all the dimensions. One of these dimensions will represent the "indicator".
+
+    *   **Endpoint:** `/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+    *   **Parameters:**
+        *   `structureType`: `datastructure`
+        *   `agencyID`: (from previous step, e.g., `IMF`)
+        *   `resourceID`: (from previous step, e.g., `ECOFIN_DSD`)
+        *   `version`: (from previous step, e.g., `1.2`)
+        *   `detail`: `full`
+        *   `references`: `all` (this is crucial to get the referenced codelists)
+
+    **Example Request (using values found in step 2):**
+    `GET https://api.imf.org/external/sdmx/3.0/structure/datastructure/IMF/ECOFIN_DSD/1.2?detail=full&references=all`
+
+    **What to look for in the response:**
+    In the JSON response, look at `data.dataStructures[0].dimensions`. You'll typically find a dimension with an `id` like `INDICATOR` or `REF_INDICATOR`. This dimension will have a `representation` property, which might directly reference a `codelist` URN (e.g., `urn:sdmx:org.sdmx.infomodel.codelist.Codelist=IMF:CL_INDICATOR(1.0)`). Extract the `agencyID`, `resourceID`, and `version` of this Codelist (e.g., `IMF`, `CL_INDICATOR`, `1.0`).
+
+4.  **Query the Indicator Codelist:**
+    This final query will give you the actual list of indicators.
+
+    *   **Endpoint:** `/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+    *   **Parameters:**
+        *   `structureType`: `codelist`
+        *   `agencyID`: (from previous step, e.g., `IMF`)
+        *   `resourceID`: (from previous step, e.g., `CL_INDICATOR`)
+        *   `version`: (from previous step, e.g., `1.0`)
+        *   `detail`: `full` (to get all the codes within the codelist)
+
+    **Example Request (using values found in step 3):**
+    `GET https://api.imf.org/external/sdmx/3.0/structure/codelist/IMF/CL_INDICATOR/1.0?detail=full`
+
+    **What you get:**
+    The JSON response will contain `data.codeLists[0].codes`. Each object in this array will have an `id` (the indicator code) and `name` (the indicator's human-readable name), along with `description`. This is your list of indicators.
+
+---
+
+### Method 2: Using the Data Availability Query (For available values for a specific context)
+
+This method is useful if you already know the `dataflow` (like `CPI`) and want to see what specific values (indicators) are available for a given `key` pattern.
+
+*   **Endpoint:** `/availability/{context}/{agencyID}/{resourceID}/{version}/{key}/{componentID}`
+*   **Parameters:**
+    *   `context`: `dataflow`
+    *   `agencyID`: `IMF.STA` (or `*`)
+    *   `resourceID`: `CPI` (or `*` if you want indicators across all dataflows, but this could return a massive, less useful result)
+    *   `version`: `+`
+    *   `key`: This is where you specify the partial key. If `USA.CPI.*.IX.M` means the indicator is the third segment, you'd use a pattern like `*.*.*.*.*.*` or `USA.CPI.*.IX.M` (if you are only interested in indicators for that specific series pattern). To get *all* indicators for the `CPI` dataflow, you might try `*` or a more generic pattern covering all dimensions of that DSD, e.g., `*.*.*.*.*.*` if the DSD has 6 dimensions, and the indicator is one of them.
+    *   `componentID`: This is the crucial part. It should be the ID of the dimension that represents the indicator. Based on common SDMX practices and the `/data` endpoint's example (`USA.CPI.*.IX.M`), the indicator is likely in the third position and its dimension ID is commonly `INDICATOR`. So, you'd use `INDICATOR` here.
+
+**Example Request:**
+`GET https://api.imf.org/external/sdmx/3.0/availability/dataflow/IMF.STA/CPI/+/USA.CPI.*.IX.M/INDICATOR`
+
+**What you get:**
+The response will be a `dataConstraint` object (`data.dataConstraints[0]`). Inside `cubeRegions[0].components`, you'll find the `id` of the dimension (e.g., `INDICATOR`) and a list of `values` that are available for that specific dimension given the `key` filter. These `values` would be your available indicators for that context.
+
+**Caveat:** The example for `componentID` in the OpenAPI spec (`COICOP_1999`) is slightly confusing as it looks like a value, not a dimension ID. However, the description states "The ID of the dimension for which to obtain availability information." so `INDICATOR` is the logical parameter to use.
+
+---
+
+**In summary, for a comprehensive list of all defined indicators (like `CPI`, `GDP`, etc.) regardless of current data availability, use Method 1 (Structure Queries). For a list of indicators that *actually have data* for a specific series pattern, use Method 2 (Data Availability).**
