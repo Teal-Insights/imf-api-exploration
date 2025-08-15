@@ -87,19 +87,17 @@ Returns structural information required for constructing queries.
 - "datastructure" (DSDs - defining the dimensions and attributes of a dataset)
 - "codelist" (Supports wildcards `*`, other query methods like `full`, `allstubs`, `children`, `parents`, `all`, `none`)
 
-### "/availability"
-
-For validating potential data queries. Returns a "Constraint" object that defines the exact "cubeRegions" and valid dimension values for a given data query pattern.
-
 ### "/data"
 
 To retrieve the actual statistical time series and observations. Filterable by context, agency, resource, version, and `key` patterns (dimension values, with wildcards). Supports time-based filtering (`updatedAfter`, `firstNObservations`, `lastNObservations`), various data packaging options (`TIME_PERIOD` for time series, `AllDimensions` for flat views), and inclusion of history (`includeHistory`).
 
-### "/metadata"
+## Stuff to skip for now
 
-Descriptive information about datasets, indicators, etc.; we will ignore for now.
+### "/availability"
 
-## Example query
+For validating potential data queries. Returns a "Constraint" object that defines the exact "cubeRegions" and valid dimension values for a given data query pattern.
+
+#### Example `/availability` query
 
 ``` {r}
 library(httr2)
@@ -139,6 +137,10 @@ writeLines(content, "imf_cpi_dataflow_availability.json")
 cat("Full response saved to: imf_cpi_dataflow_availability.json\n")
 ```
 
+### "/metadata"
+
+Descriptive information about datasets, indicators, etc.; we will ignore for now.
+
 ## Step-by-step workflow
 
 ### Method 1: Using the structure query to find the indicator codelist
@@ -165,6 +167,91 @@ This is the most reliable way to get the comprehensive list of available indicat
 
     **What to look for in the response:**
     In the JSON response, navigate to `data.dataflows[0].links`. You should find a link with `title: "DataStructureDefinition"` and a `urn` like `urn:sdmx:org.sdmx.infomodel.datastructure.DataStructure=IMF:ECOFIN_DSD(1.2)`. Extract the `agencyID`, `resourceID`, and `version` of this Data Structure Definition (e.g., `IMF`, `ECOFIN_DSD`, `1.2`).
+    
+## Jenny's Exploration
+
+### `structure` endpoint
+
+Dimensions: 
+
+- `json_object["data"]["dataStructures"][0]["dataStructureComponents"]["dimensionList"]["dimensions"]`
+- `json_object["data"]["dataStructures"][0]["dataStructureComponents"]["dimensionList"]["timeDimensions"]`
+
+```{r}
+library(httr2)
+library(glue)
+library(dplyr)
+library(tidyverse)
+
+# 1. Query the Dataflow
+base_url <- "https://api.imf.org/external/sdmx/3.0"
+structureType <- "dataflow"
+agencyID <- "IMF.STA"
+resourceID <- "CPI" # Consumer Price Index
+version <- "+" # This will probably always be the same
+
+json_header <- "application/json"
+user_agent <- "r-imf-explore/0.0.1" # Telling the API who we are
+
+url <- glue("{base_url}/structure/{structureType}/{agencyID}/{resourceID}/{version}?detail=full&references=children")
+cat(url, "\n")
+
+response <- request(url) |>
+  req_headers(
+    "Accept" = json_header,
+    "User-Agent" = user_agent
+  ) |>
+  req_cache(tempdir()) |>
+  req_perform()
+
+# Check the response status
+print(paste("Status:", resp_status(response)))
+
+# Get the response body as text (JSON format)
+content <- resp_body_string(response)
+
+# Print first 1000 characters to preview
+cat("Response preview:\n")
+cat(substr(content, 1, 1000))
+cat("\n...\n")
+
+# Optionally save the full response to a file
+writeLines(content, "imf_cpi_dataflow_structure.json")
+cat("Full response saved to: imf_cpi_dataflow_structure.json\n")
+```
+
+``` {r}
+# 2. Extract Associated Data Structure Definitions
+# Parse the json file into nested R list
+j <- resp_body_json(response, simplifyVector = TRUE)
+
+# Extract urn, agency ID, resource ID, and version for Data Structure Definition (DSD)
+dsd.urn <- j$data$dataflows$structure
+dsd.agencyID <- j$data$dataStructures$agencyID
+dsd.resourceID <- j$data$dataStructures$id
+dsd.version <- j$data$dataStructures$version
+dsd.table <- dplyr::tibble(
+  dsd.urn = dsd.urn,
+  dsd.agencyID = dsd.agencyID,
+  dsd.resourceID = dsd.resourceID,
+  dsd.version = dsd.version
+) 
+
+# Extract ID, position, and urn for Dimensions
+dims <- j$data$dataStructures$dataStructureComponents$dimensionList
+dimensions.ID <- dims$dimensions[[1]][["id"]]
+dimensions.position <- dims$dimensions[[1]][["position"]]
+dimensions.urn <- dims$dimensions[[1]][["conceptIdentity"]]
+dim.table <- dplyr::tibble(
+  dim.id = dimensions.ID,
+  dim.position = dimensions.position,
+  dim.urn = dimensions.urn
+)
+
+# Generate the output table
+dsd.table
+dim.table
+```
 
 3.  **Query the Data Structure Definition (DSD) to find the Indicator Dimension's Codelist:**
     The DSD defines all the dimensions. One of these dimensions will represent the "indicator".
@@ -184,6 +271,60 @@ This is the most reliable way to get the comprehensive list of available indicat
     **What to look for in the response:**
     In the JSON response, look at `data.dataStructures[0].dimensions`. You'll typically find a dimension with an `id` like `INDICATOR` or `REF_INDICATOR`. This dimension will have a `representation` property, which might directly reference a `codelist` URN (e.g., `urn:sdmx:org.sdmx.infomodel.codelist.Codelist=IMF:CL_INDICATOR(1.0)`). Extract the `agencyID`, `resourceID`, and `version` of this Codelist (e.g., `IMF`, `CL_INDICATOR`, `1.0`).
 
+Jenny's Exploration
+```{r}
+# 1. Query the Data Structure Definition (DSD)
+structureType <- "datastructure"
+url <- glue("{base_url}/structure/{structureType}/{dsd.agencyID}/{dsd.resourceID}/{dsd.version}?detail=full&references=all")
+cat(url, "\n")
+
+response <- request(url) |>
+  req_headers(
+    "Accept" = json_header,
+    "User-Agent" = user_agent
+  ) |>
+  req_cache(tempdir()) |>
+  req_perform()
+
+# Check the response status
+print(paste("Status:", resp_status(response)))
+
+# Get the response body as text (JSON format)
+content <- resp_body_string(response)
+
+# Print first 1000 characters to preview
+cat("Response preview:\n")
+cat(substr(content, 1, 1000))
+cat("\n...\n")
+
+# Optionally save the full response to a file
+writeLines(content, "imf_cpi_dataflow_availability.json")
+cat("Full response saved to: imf_cpi_dataflow_availability.json\n")
+
+# 2. Extract Associated Data Structure Definitions
+# Parse the json file into nested R list
+j <- resp_body_json(response, simplifyVector = TRUE)
+
+codelists_to_keep <- c(
+  "CL_INDEX_TYPE",
+  "CL_COUNTRY",
+  "CL_COICOP_1999",
+  "CL_CPI_TYPE_OF_TRANSFORMATION",
+  "CL_FREQ"
+)
+
+# Filter and keep only relevant columns
+codelist.table <- j$data$codelists %>%
+  filter(id %in% codelists_to_keep) %>%
+  select(
+    name,
+    agencyID,
+    resourceID = id,
+    version
+  )
+
+codelist.table
+```
 4.  **Query the Indicator Codelist:**
     This final query will give you the actual list of indicators.
 
@@ -200,6 +341,39 @@ This is the most reliable way to get the comprehensive list of available indicat
 
     **What you get:**
     The JSON response will contain `data.codeLists[0].codes`. Each object in this array will have an `id` (the indicator code) and `name` (the indicator's human-readable name), along with `description`. This is your list of indicators.
+
+```{r}
+# 1. Query the Codelist
+structureType <- "codelist"
+url.table <- codelist.table %>%
+  mutate(
+    url = glue("{base_url}/structure/{structureType}/{agencyID}/{resourceID}/{version}?detail=full")
+  )
+
+fetch_codelist_json <- function(url) {
+  response <- request(url) |>
+  req_headers(
+    "Accept" = json_header,
+    "User-Agent" = user_agent
+  ) |>
+  req_cache(tempdir()) |>
+  req_perform()
+  return(response)
+}
+
+response.table <- url.table %>%
+  mutate(
+    resp   = map(url, fetch_codelist_json),
+    status = map_int(resp, resp_status),
+    text   = map_chr(resp, resp_body_string),
+    json   = map(resp, ~ resp_body_json(.x, simplifyVector = TRUE))
+  )
+
+response.table$json[1]
+
+
+
+```
 
 ---
 
