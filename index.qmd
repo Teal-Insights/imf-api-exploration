@@ -401,3 +401,101 @@ The response will be a `dataConstraint` object (`data.dataConstraints[0]`). Insi
 ---
 
 **In summary, for a comprehensive list of all defined indicators (like `CPI`, `GDP`, etc.) regardless of current data availability, use Method 1 (Structure Queries). For a list of indicators that *actually have data* for a specific series pattern, use Method 2 (Data Availability).**
+
+## Kweku's Summary
+
+### Questions to answer
+- How do we list available datasets?
+  * **Example dataset:** `available_datasets.json`
+  
+  * **Endpoint:** `{base_url}/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+  
+  * **Request Parameters:** 
+    * structureType: `dataflow`
+    * agencyID: `IMF.STA`
+    * resourceID: `*`
+    * version: `+`
+
+  * **Request URL:** `https://api.imf.org/external/sdmx/3.0/structure/dataflow/IMF.STA/*/+`
+
+  **What you get:**
+
+  In the JSON response, `data.dataflows` is an array of objects and **each** object contains the `name` and `id` of a **single** dataset. 
+  
+  All available dataset names and ids can be obtained from the `dataflows` array.
+
+- How do we get structure/parameters of a dataset?
+  * **Example dataset:** `available_data_structures.json`
+
+  * **Endpoint:** `{base_url}/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+  
+  * **Request Parameters:** 
+    * structureType: `datastructure`
+    * agencyID: `IMF.STA`
+    * resourceID: `*`
+    * version: `+`
+
+  * **Request URL:** `https://api.imf.org/external/sdmx/3.0/structure/datastructure/IMF.STA/*/+`
+
+  **What you get:**
+
+  In the JSON response, `data.datastructure` is an array of objects and **each** object contains a `dataStructureComponents` field which contains a `dimensionsList` object. 
+
+  `dimensionList` has 2 main entries.
+
+    1. `dimensions` which is a list of **dimensions**.
+    2. `timedimensions` which is a list of **time dimensions**.
+  
+  **Issues:** 
+
+  There is inconsistent mapping from an `id` and `name` of a **data structure** to its corresponding values in a **dataset**. 
+  
+- How do we get codelist for a given parameter?
+  * **Example dataset:** `available_codelists.json`
+  
+  * **Endpoint:** `{base_url}/structure/{structureType}/{agencyID}/{resourceID}/{version}`
+  
+  * **Request Parameters:** 
+    * structureType: `codelist`
+    * agencyID: `IMF`
+    * resourceID: `*`
+    * version: `+`
+
+  * **Request URL:** `https://api.imf.org/external/sdmx/3.0/structure/codelist/IMF/*/+`
+
+  **What you get:**
+
+  In the JSON response, `data.codelists` is an array of objects and **each** object contains an `id` that can be mapped to the **dimension** of a **dataset**. 
+  
+  This object contains a `codes` field, which is an array of codes for this codelist.
+  
+- How do we query data?
+  * **Example dataset:** `available_data.json`
+  
+  * **Endpoint:** `{base_url}/data/{context}/{agencyID}/{resourceID}/{version}/{key}?dimensionsAtObservation={dimensions_at_observation}&attributes={attributes}&measures={measures}`
+  
+  * **Request Parameters:** 
+    * context: `dataflow`
+    * agencyID: `IMF.STA`
+    * resourceID: `*`
+    * version: `+`
+    * key: `` 
+      
+      This is the series key of the dataset. It is a key to represent **slices** of the cube, 
+      which can be thought of as segments of the dataset. 
+
+      An example key is `USA.CPI.*.IX.M`.
+    
+    * dimensionsAtObservations: `TIME_PERIOD`
+    * attributes: `dsd`
+    * measures: `all`
+
+  * **Example Request URL:** `https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.STA/*/+/USA.CPI.*.IX.M?dimensionsAtObservation=TIME_PERIOD&attributes=dsd&measures=all`
+
+  **What you get:**
+  
+  In the JSON response, `data.dataSets` is an array of objects, and **each** object contains a `series` field which contains objects of `observations`. On the [IMF Data Explorer](https://data.imf.org/en/Data-Explorer) each observation corresponds to row-level time series.
+  
+  In the JSON reponse, `data.structures` contains column names and non-numerical data in the dataset.
+
+  
